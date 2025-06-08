@@ -16,6 +16,7 @@ using Content.Shared.Wires;
 using JetBrains.Annotations;
 using Robust.Shared.Audio.Systems;
 using Robust.Shared.Utility;
+using Content.Shared.Exodus.Lock.Components;
 
 namespace Content.Shared.Lock;
 
@@ -33,6 +34,7 @@ public sealed class LockSystem : EntitySystem
     [Dependency] private readonly SharedAudioSystem _audio = default!;
     [Dependency] private readonly SharedPopupSystem _sharedPopupSystem = default!;
     [Dependency] private readonly SharedDoAfterSystem _doAfter = default!;
+    [Dependency] private readonly SharedUserInterfaceSystem _uiSystem = default!;
 
     /// <inheritdoc />
     public override void Initialize()
@@ -55,6 +57,11 @@ public sealed class LockSystem : EntitySystem
 
         SubscribeLocalEvent<ActivatableUIRequiresLockComponent, ActivatableUIOpenAttemptEvent>(OnUIOpenAttempt);
         SubscribeLocalEvent<ActivatableUIRequiresLockComponent, LockToggledEvent>(LockToggled);
+
+        //Exodus CodeLock
+        SubscribeLocalEvent<CodeLockComponent, CodeLockButtonPressedMessage>(OnUiButtonPressed);
+        SubscribeLocalEvent<CodeLockComponent, ActivateInWorldEvent>(OnCodeLockActivated);
+        SubscribeLocalEvent<CodeLockComponent, BoundUIClosedEvent>(OnUIClosed);
     }
 
     private void OnStartup(EntityUid uid, LockComponent lockComp, ComponentStartup args)
@@ -64,7 +71,7 @@ public sealed class LockSystem : EntitySystem
 
     private void OnActivated(EntityUid uid, LockComponent lockComp, ActivateInWorldEvent args)
     {
-        if (args.Handled || !args.Complex)
+        if (args.Handled || !args.Complex || HasComp<CodeLockComponent>(uid))
             return;
 
         // Only attempt an unlock by default on Activate
@@ -251,6 +258,14 @@ public sealed class LockSystem : EntitySystem
         if (!_actionBlocker.CanComplexInteract(user))
             return false;
 
+        if (!EntityManager.TryGetComponent<LockComponent>(uid, out var lockComp))
+            return false;
+
+        if (HasComp<CodeLockComponent>(uid) && lockComp.Locked)
+        {
+            return false;
+        }
+
         var ev = new LockToggleAttemptEvent(user, quiet);
         RaiseLocalEvent(uid, ref ev, true);
         if (ev.Cancelled)
@@ -302,14 +317,28 @@ public sealed class LockSystem : EntitySystem
         if (!component.Locked || !component.BreakOnAccessBreaker)
             return;
 
-        _audio.PlayPredicted(component.UnlockSound, uid, args.UserUid);
+        if (HasComp<CodeLockComponent>(uid))
+        {
+            if (!EntityManager.TryGetComponent<CodeLockComponent>(uid, out var codeLockComp))
+                return;
 
-        component.Locked = false;
-        _appearanceSystem.SetData(uid, LockVisuals.Locked, false);
-        Dirty(uid, component);
+            _audio.PlayPredicted(component.UnlockSound, uid, args.UserUid);
 
-        var ev = new LockToggledEvent(false);
-        RaiseLocalEvent(uid, ref ev, true);
+            codeLockComp.Password = "";
+            Dirty(uid, codeLockComp);
+        }
+
+        if (!HasComp<CodeLockComponent>(uid) && HasComp<LockComponent>(uid))
+        {
+            _audio.PlayPredicted(component.UnlockSound, uid, args.UserUid);
+
+            component.Locked = false;
+            _appearanceSystem.SetData(uid, LockVisuals.Locked, false);
+            Dirty(uid, component);
+
+            var ev = new LockToggledEvent(false);
+            RaiseLocalEvent(uid, ref ev, true);
+        }
 
         args.Repeatable = true;
         args.Handled = true;
@@ -404,5 +433,153 @@ public sealed class LockSystem : EntitySystem
             return;
 
         _activatableUI.CloseAll(uid);
+    }
+
+    //Exodus CodeLock start
+    private void OnCodeLockActivated(EntityUid uid, CodeLockComponent component, ActivateInWorldEvent args)
+    {
+        if (!args.Complex || args.Handled)
+            return;
+
+        if (!EntityManager.TryGetComponent<LockComponent>(uid, out var lockComp))
+            return;
+
+        if (!lockComp.Locked && lockComp.LockOnClick)
+        {
+            TryLock(uid, args.User, lockComp);
+            args.Handled = true;
+        }
+
+        if (lockComp.Locked && lockComp.UnlockOnClick)
+        {
+            _uiSystem.OpenUi(uid, CodeLockUiKey.Key, args.User);
+            _sharedPopupSystem.PopupClient(Loc.GetString("Введите код!"), uid, args.User);
+            args.Handled = true;
+        }
+    }
+
+    private void OnUIClosed(EntityUid uid, CodeLockComponent component, BoundUIClosedEvent args)
+    {
+        component.CurrentCode = "";
+        UpdateUi(uid, component);
+    }
+
+    private void OnUiButtonPressed(EntityUid uid, CodeLockComponent component, CodeLockButtonPressedMessage msg)
+    {
+        var user = msg.Actor;
+
+        if (!Exists(user))
+            return;
+
+        switch (msg.Button)
+        {
+            case UiButton.One:
+                CodeUpdate(uid, user, component, "1");
+                break;
+            case UiButton.Two:
+                CodeUpdate(uid, user, component, "2");
+                break;
+            case UiButton.Three:
+                CodeUpdate(uid, user, component, "3");
+                break;
+            case UiButton.Four:
+                CodeUpdate(uid, user, component, "4");
+                break;
+            case UiButton.Five:
+                CodeUpdate(uid, user, component, "5");
+                break;
+            case UiButton.Six:
+                CodeUpdate(uid, user, component, "6");
+                break;
+            case UiButton.Seven:
+                CodeUpdate(uid, user, component, "7");
+                break;
+            case UiButton.Eight:
+                CodeUpdate(uid, user, component, "8");
+                break;
+            case UiButton.Nine:
+                CodeUpdate(uid, user, component, "9");
+                break;
+            case UiButton.Clean:
+                CodeReset(uid, user, component);
+                break;
+            case UiButton.Zero:
+                CodeUpdate(uid, user, component, "0");
+                break;
+            case UiButton.Submit:
+                if (component.Password != "" && component.Password.Length == component.PasswordLength)
+                {
+                    CodeSubmit(uid, user, component);
+                }
+                else
+                {
+                    SetPassword(uid, user, component);
+                }
+                break;
+        }
+    }
+
+    private void CodeUpdate(EntityUid uid, EntityUid user, CodeLockComponent component, string pressedButton)
+    {
+        if (component.CurrentCode.Length < component.PasswordLength)
+        {
+            component.CurrentCode += pressedButton;
+            UpdateUi(uid, component);
+        }
+    }
+
+    private void CodeReset(EntityUid uid, EntityUid user, CodeLockComponent component)
+    {
+        component.CurrentCode = "";
+        UpdateUi(uid, component);
+    }
+
+    private void CodeSubmit(EntityUid uid, EntityUid user, CodeLockComponent component)
+    {
+        if (!EntityManager.TryGetComponent<LockComponent>(uid, out var lockComp))
+            return;
+
+        component.SubmitEnabled = true;
+
+        if (component.CurrentCode == component.Password && lockComp.Locked)
+        {
+            lockComp.Locked = false;
+            _appearanceSystem.SetData(uid, LockVisuals.Locked, false);
+            _sharedPopupSystem.PopupEntity(Loc.GetString("lock-comp-do-unlock-success",
+                ("entityName", Identity.Name(uid, EntityManager))), uid);
+            _audio.PlayPvs(lockComp.UnlockSound, uid);
+            Dirty(uid, lockComp);
+        }
+        else
+        {
+            component.CurrentCode = "";
+        }
+
+
+        UpdateUi(uid, component);
+    }
+
+    private void SetPassword(EntityUid uid, EntityUid user, CodeLockComponent component)
+    {
+        if (component.CurrentCode.Length == component.PasswordLength)
+            component.Password = component.CurrentCode;
+    }
+
+    private void UpdateUi(EntityUid uid, CodeLockComponent? component = null)
+    {
+        if (!Resolve(uid, ref component))
+            return;
+
+        if (!_uiSystem.HasUi(uid, CodeLockUiKey.Key))
+            return;
+
+        var state = GetUiState(uid, component);
+        component.SubmitEnabled = false;
+        _uiSystem.SetUiState(uid, CodeLockUiKey.Key, state);
+    }
+
+    private CodeLockBoundUserInterfaceState GetUiState(EntityUid uid, CodeLockComponent component)
+    {
+        return new CodeLockBoundUserInterfaceState(component.Password, component.CurrentCode, component.SubmitEnabled);
     }
 }

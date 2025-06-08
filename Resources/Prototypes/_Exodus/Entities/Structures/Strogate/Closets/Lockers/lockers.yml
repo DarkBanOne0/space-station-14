@@ -61,3 +61,22 @@
       - id: NetworkConfigurator
         prob: 0.5
       - id: ClothingOuterHardsuitRnd
+
+- type: entity
+  id: CodeLock
+  parent: LockerBaseSecure
+  name: CodeLock
+  description: This is where the bartender keeps the booze.
+  components:
+  - type: Appearance
+  - type: EntityStorageVisuals
+    stateBaseClosed: secure
+    stateDoorOpen: secure_open
+    stateDoorClosed: secure_door
+  #- type: ActivatableUI
+  #  key: enum.CodeLockUiKey.Key
+  - type: UserInterface
+    interfaces:
+      enum.CodeLockUiKey.Key:
+        type: CodeLockBoundUserInterface
+  - type: CodeLock
