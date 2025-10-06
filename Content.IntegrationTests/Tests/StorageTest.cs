@@ -50,7 +50,7 @@ namespace Content.IntegrationTests.Tests
             await pair.CleanReturnAsync();
         }
         */
-        //Exodus-StorageSizeArbitrageTest-End
+        //Exodus-DeleteStorageSizeArbitrageTest-End
 
         [Test]
         public async Task TestStorageFillPrototypes()
